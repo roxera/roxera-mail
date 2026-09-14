@@ -155,7 +155,7 @@ export default {
       const maxAgeH = parseInt(env.TEMP_MAX_AGE_H || '24', 10);
       const created = cur?.fields?.createdAt?.stringValue ? new Date(cur.fields.createdAt.stringValue).getTime() : Date.now();
       const next = Math.min(base + 15 * 60000, created + maxAgeH * 3600000);
-      await fetch(FS(env, `/temp_mailboxes/${id}`), { method: 'PATCH', headers: fsHeaders(env), body: JSON.stringify({ fields: { expiresAt: S(new Date(next).toISOString()) } }) }).catch(() => {});
+      await fetch(FS(env, `/temp_mailboxes/${id}?updateMask.fieldPaths=expiresAt`), { method: 'PATCH', headers: fsHeaders(env), body: JSON.stringify({ fields: { expiresAt: S(new Date(next).toISOString()) } }) }).catch(() => {});
       return J({ expiresAt: new Date(next).toISOString() }, 200, env);
     }
 

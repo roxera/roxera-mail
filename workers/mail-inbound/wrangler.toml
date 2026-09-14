@@ -11,7 +11,6 @@ BLOCK_FROM = ""
 BLOCK_DOMAINS = ""
 BLOCK_WORDS = "viagra,crypto giveaway,inheritance fund"
 MAX_MAIL_KB = "5120"
+MAIL_API_BASE = "https://roxera-mail-api.roxera.workers.dev"
 
-# Secrets (ставить через `npx wrangler secret put`, НЕ коммитить):
-# MAIL_API_BASE (URL mail-api + /internal/ingest), INTERNAL_KEY
-# Пример: MAIL_API_BASE=https://roxera-mail-api.<you>.workers.dev
+# INTERNAL_KEY ставится только секретом: npx wrangler secret put INTERNAL_KEY
