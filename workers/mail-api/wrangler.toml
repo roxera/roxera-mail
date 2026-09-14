@@ -14,5 +14,12 @@ CORS_ORIGIN = "https://roxera-mail.pages.dev"
 [triggers]
 crons = ["*/10 * * * *"]
 
+[[kv_namespaces]]
+binding = "ROXERA"
+id = "930b65afcb4743b9835e99f670a56a91"
+
+[[send_email]]
+name = "SEB"
+
 # Secrets (ставить через `npx wrangler secret put`, НЕ коммитить):
 # FIREBASE_PROJECT_ID, FIREBASE_WEB_KEY, FIREBASE_ADMIN_TOKEN, RESEND_API_KEY, INTERNAL_KEY

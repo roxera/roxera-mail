@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  addDoc, collection, deleteDoc, doc, getDocs, limit, onSnapshot,
+  addDoc, collection, deleteDoc, doc, limit, onSnapshot,
   orderBy, query, updateDoc, where,
 } from 'firebase/firestore';
 import { db, isFirebaseConfigured } from '../lib/firebase';
@@ -30,15 +30,14 @@ export function useTemp() {
   const create = useCallback(async (domain?: string) => {
     setLoading(true);
     try {
-      if (isFirebaseConfigured()) {
-        try {
-          const r = await api.createTemp(domain);
-          const b: TempMailbox = { id: r.id, address: r.address, domain: r.address.split('@')[1]!, expiresAt: r.expiresAt, createdAt: new Date().toISOString() };
-          localStorage.setItem('roxera.temp.token', r.token);
-          save(b);
-          return;
-        } catch { /* fallback ниже */ }
-      }
+      try {
+        const r = await api.createTemp(domain);
+        const b: TempMailbox = { id: r.id, address: r.address, domain: r.address.split('@')[1]!, expiresAt: r.expiresAt, createdAt: new Date().toISOString() };
+        localStorage.setItem('roxera.temp.token', r.token);
+        save(b);
+        setMsgs([]);
+        return;
+      } catch { /* fallback ниже (нет API) */ }
       const address = makeTempAddress(domain);
       const token = makeToken();
       const b: TempMailbox = {
@@ -47,24 +46,16 @@ export function useTemp() {
         expiresAt: expiryFromNow(TEMP_TTL_MIN), createdAt: new Date().toISOString(),
       };
       localStorage.setItem('roxera.temp.token', token);
-      if (isFirebaseConfigured()) {
-        await addDoc(collection(db, 'temp_mailboxes'), {
-          address: b.address, domain: b.domain, tokenHash: await sha256Hex(token),
-          expiresAt: b.expiresAt, createdAt: b.createdAt,
-        });
-      }
       save(b);
+      setMsgs([]);
     } finally { setLoading(false); }
   }, []);
 
   const extend = useCallback(async () => {
     if (!box) return;
     const token = localStorage.getItem('roxera.temp.token') || '';
-    try {
-      if (isFirebaseConfigured()) {
-        try { const r = await api.extendTemp(box.id, token); save({ ...box, expiresAt: r.expiresAt }); return; } catch { /* fallback */ }
-      }
-    } catch { /* ignore */ }
+    try { const r = await api.extendTemp(box.id, token); save({ ...box, expiresAt: r.expiresAt }); return; }
+    catch { /* fallback */ }
     const cur = new Date(box.expiresAt).getTime();
     const max = Date.now() + 24 * 3600_000;
     const next = Math.min(cur + 15 * 60_000, max);
@@ -72,30 +63,40 @@ export function useTemp() {
   }, [box]);
 
   const destroy = useCallback(async () => {
-    if (box && isFirebaseConfigured()) {
-      try {
-        const token = localStorage.getItem('roxera.temp.token') || '';
-        try { await api.deleteTemp(box.id, token); } catch { /* best effort */ }
-        const q = query(collection(db, 'temp_mailboxes'), where('address', '==', box.address), limit(1));
-        const s = await getDocs(q);
-        await Promise.all(s.docs.map((d) => deleteDoc(d.ref)));
-      } catch { /* ignore */ }
+    if (box) {
+      const token = localStorage.getItem('roxera.temp.token') || '';
+      try { await api.deleteTemp(box.id, token); } catch { /* best effort */ }
     }
     save(null);
     setMsgs([]);
   }, [box]);
 
-  // подписка на письма
+  // polling инбокса через Worker API (KV-хранилище, работает без Firebase)
   useEffect(() => {
-    if (!box || !isFirebaseConfigured()) return;
-    const q = query(
-      collection(db, 'messages'),
-      where('mailboxId', '==', box.id),
-      orderBy('createdAt', 'desc'),
-      limit(100),
-    );
-    return onSnapshot(q, (s) => setMsgs(s.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<MailMessage, 'id'>) })) as MailMessage[]));
-  }, [box]);
+    if (!box) return;
+    let dead = false;
+    const pull = async () => {
+      const token = localStorage.getItem('roxera.temp.token') || '';
+      try {
+        const r = await api.inboxTemp(box.id, token);
+        if (dead) return;
+        setMsgs(r.messages);
+        if (r.expiresAt && r.expiresAt !== box.expiresAt) save({ ...box, expiresAt: r.expiresAt });
+      } catch {
+        if (dead) return;
+        // нет API — демо-письмо чтобы UI не был пустым
+        setMsgs((prev) => prev.length ? prev : [{
+          id: 'demo1', mailboxId: box.id, ownerType: 'temp', direction: 'in',
+          from: 'welcome@roxera.example', to: box.address, subject: 'Добро пожаловать в Roxera Mail',
+          text: 'Нет связи с API. Проверьте VITE_API_BASE и воркер mail-api.',
+          createdAt: new Date().toISOString(), spamScore: 0, spamVerdict: 'inbox',
+        }]);
+      }
+    };
+    pull();
+    const t = setInterval(pull, 4000);
+    return () => { dead = true; clearInterval(t); };
+  }, [box?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // таймер
   useEffect(() => {
@@ -109,18 +110,6 @@ export function useTemp() {
     }, 1000);
     return () => clearInterval(t);
   }, [box, destroy]);
-
-  // демо-письмо чтобы UI не был пустым без бэка
-  useEffect(() => {
-    if (box && !isFirebaseConfigured() && msgs.length === 0) {
-      setMsgs([{
-        id: 'demo1', mailboxId: box.id, ownerType: 'temp', direction: 'in',
-        from: 'welcome@roxera.example', to: box.address, subject: 'Добро пожаловать в Roxera Mail',
-        text: 'Это демо-письмо (Firebase не настроен).\nЗаполните .env и настройте Worker — и сюда начнут приходить настоящие письма с Cloudflare.',
-        createdAt: new Date().toISOString(), spamScore: 0, spamVerdict: 'inbox',
-      }]);
-    }
-  }, [box, msgs.length]);
 
   return { box, msgs, loading, left, create, extend, destroy, domains: [...TEMP_DOMAINS] };
 }
