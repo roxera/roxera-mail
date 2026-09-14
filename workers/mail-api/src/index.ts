@@ -93,7 +93,7 @@ async function kvStats(env: Env) {
   const num = async (k: string) => {
     try { return parseInt((await env.ROXERA.get(k)) || '0', 10) || 0; } catch { return 0; }
   };
-  return { tempCreated: await num('stat:tempCreated'), mailsIn: await num('stat:mailsIn') };
+  return { tempCreated: await num('stat:tempCreated'), mailsIn: await num('stat:mailsIn'), boxesCreated: await num('stat:boxesCreated') };
 }
 
 // Проверка Firebase ID token -> {uid,email} через accounts:lookup (просто и бесплатно)
@@ -162,6 +162,7 @@ export default {
         const tidRaw = await env.ROXERA.get('taddr:' + to.toLowerCase()).catch(() => null);
         const tid = String(tidRaw || '').replace(/^"|"$/g, '');
         if (tid) { mailboxId = tid; ownerType = 'temp'; }
+        if (tid && await kvGet(env, 'pbox:' + tid)) { ownerType = 'user'; ownerRef = 'local'; }
         else {
           const t = await fsWhere(env, 'temp_mailboxes', 'address', to.toLowerCase(), 1);
           if (t[0]) { mailboxId = t[0].id; ownerType = 'temp'; }
@@ -235,6 +236,82 @@ export default {
         address: S(address), domain: S(domain), tokenHash: S(rec.tokenHash), expiresAt: S(expiresAt), createdAt: S(now),
       }).catch(() => {});
       return J({ id, address, token: tok, expiresAt }, 200, env);
+    }
+
+    // --- именные ящики без логина (токен вместо пароля; приём работает сразу) ---
+    const BOX_TTL = 2332800; // 27 дней, продлевается при каждом чтении
+    const BOX_DOMAINS = ['europe.pp.ua', 'ajoure.cfd'];
+    if (url.pathname === '/v1/boxes' && req.method === 'POST') {
+      const local = String(body.local || '').toLowerCase().trim();
+      const domain = String(body.domain || '');
+      if (!/^[a-z0-9][a-z0-9._-]{1,30}[a-z0-9]$/.test(local)) return J({ error: 'bad_local' }, 400, env);
+      if (!BOX_DOMAINS.includes(domain)) return J({ error: 'bad_domain' }, 400, env);
+      const address = `${local}@${domain}`;
+      if (await env.ROXERA.get('taddr:' + address).catch(() => null)) return J({ error: 'taken', detail: 'адрес занят' }, 409, env);
+      const iph = await sha256Hex(req.headers.get('CF-Connecting-IP') || 'unknown');
+      const reg: string[] = (await kvGet<string[]>(env, 'ipreg:' + iph)) || [];
+      if (reg.length >= 5) return J({ error: 'limit', detail: 'максимум 5 ящиков' }, 403, env);
+      const tok = token();
+      const id = (await sha256Hex('box:' + address)).slice(0, 16);
+      const rec = { id, address, local, domain, tokenHash: await sha256Hex(tok), createdAt: new Date().toISOString() };
+      await kvPut(env, 'pbox:' + id, rec, BOX_TTL);
+      await env.ROXERA.put('taddr:' + address, id, { expirationTtl: BOX_TTL });
+      reg.push(id);
+      await kvPut(env, 'ipreg:' + iph, reg, BOX_TTL);
+      await kvIncr(env, 'stat:boxesCreated');
+      return J({ id, address, token: tok, expiresAt: new Date(Date.now() + BOX_TTL * 1000).toISOString() }, 200, env);
+    }
+    const mBoxInbox = url.pathname.match(/^\/v1\/boxes\/([^/]+)\/inbox$/);
+    if (mBoxInbox && req.method === 'GET') {
+      const rec = await kvGet<any>(env, 'pbox:' + mBoxInbox[1]);
+      if (!rec || (await sha256Hex(url.searchParams.get('token') || '')) !== rec.tokenHash) return J({ error: 'not_found' }, 404, env);
+      await kvPut(env, 'pbox:' + rec.id, rec, BOX_TTL);
+      await env.ROXERA.put('taddr:' + rec.address.toLowerCase(), rec.id, { expirationTtl: BOX_TTL }).catch(() => {});
+      const bmsgs = (await kvGet<any[]>(env, 'inbox:' + rec.id)) || [];
+      return J({ address: rec.address, messages: bmsgs }, 200, env);
+    }
+    const mBoxDel = url.pathname.match(/^\/v1\/boxes\/([^/]+)$/);
+    if (mBoxDel && req.method === 'DELETE') {
+      const rec = await kvGet<any>(env, 'pbox:' + mBoxDel[1]);
+      if (rec && (await sha256Hex(body.token || '')) === rec.tokenHash) {
+        await kvDel(env, 'pbox:' + rec.id);
+        await kvDel(env, 'taddr:' + rec.address.toLowerCase());
+        await kvDel(env, 'inbox:' + rec.id);
+      }
+      return J({ ok: true }, 200, env);
+    }
+    const mBoxSend = url.pathname.match(/^\/v1\/boxes\/([^/]+)\/send$/);
+    if (mBoxSend && req.method === 'POST') {
+      const rec = await kvGet<any>(env, 'pbox:' + mBoxSend[1]);
+      if (!rec || (await sha256Hex(body.token || '')) !== rec.tokenHash) return J({ error: 'not_found' }, 404, env);
+      const to = String(body.to || '').trim();
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return J({ error: 'bad_to' }, 400, env);
+      const fromAddr = rec.address;
+      const subject = String(body.subject || '(без темы)').slice(0, 500);
+      const text = String(body.text || '');
+      let via: string | null = null;
+      let detail = '';
+      try {
+        const r = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${env.RESEND_API_KEY}` },
+          body: JSON.stringify({ from: fromAddr, to: [to], subject, text: text || undefined }),
+        });
+        if (r.ok) via = 'resend';
+        else detail = 'resend ' + r.status + ' ' + (await r.text()).slice(0, 160);
+      } catch (e) { detail = 'resend_net ' + String(e).slice(0, 120); }
+      if (!via) {
+        const raw = `From: ${fromAddr}\r\nTo: ${to}\r\nSubject: ${subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${text}`;
+        try { await env.SEB.send(new EmailMessage(fromAddr, to, raw)); via = 'cf'; }
+        catch (e) { detail += ' | cf: ' + String(e).slice(0, 160); }
+      }
+      const out = { id: 'm' + Date.now().toString(36) + randLocal(4), mailboxId: rec.id, ownerType: 'user', ownerRef: 'local', direction: 'out', from: fromAddr, to: to.slice(0, 300), subject, text: text.slice(0, 20000), html: '', createdAt: new Date().toISOString() };
+      const ik2 = 'inbox:' + rec.id;
+      const arr2: any[] = (await kvGet<any[]>(env, ik2)) || [];
+      arr2.unshift(out);
+      await kvPut(env, ik2, arr2.slice(0, 100), BOX_TTL);
+      if (via) return J({ ok: true, via, id: out.id }, 200, env);
+      return J({ error: 'send_failed', detail }, 502, env);
     }
 
     // --- temp inbox (polling для фронта) ---

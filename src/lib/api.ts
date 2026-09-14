@@ -48,4 +48,8 @@ export const api = {
   whoami: () => req<{ uid: string; email: string; role: string }>('/v1/admin/whoami'),
   claimAdmin: () => req<{ ok: boolean; role: string }>('/v1/admin/claim', { method: 'POST', body: '{}' }),
   adminOverview: () => req<AdminOverview>('/v1/admin/overview'),
+  createBox2: (local: string, domain: string) => req<{ id: string; address: string; token: string; expiresAt: string }>('/v1/boxes', { method: 'POST', body: JSON.stringify({ local, domain }) }),
+  boxInbox: (id: string, token: string) => req<{ address: string; messages: MailMessage[] }>(`/v1/boxes/${encodeURIComponent(id)}/inbox?token=${encodeURIComponent(token)}`),
+  deleteBox: (id: string, token: string) => req<{ ok: boolean }>(`/v1/boxes/${id}`, { method: 'DELETE', body: JSON.stringify({ token }) }),
+  sendBox: (id: string, token: string, p: { to: string; subject: string; text: string }) => req<{ ok: boolean; via: string; id: string }>(`/v1/boxes/${id}/send`, { method: 'POST', body: JSON.stringify({ token, ...p }) }),
 };

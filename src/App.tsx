@@ -8,12 +8,10 @@ import { ToastHost } from './components/Toast';
 import type { JSX } from 'react';
 
 function Guard({ children, admin }: { children: JSX.Element; admin?: boolean }) {
-  const { user, loading, demoMode } = useAuth();
+  const { loading } = useAuth();
   if (loading) return <div className="p-10 text-sm text-[#5f6368]">Загрузка…</div>;
-  // Решения по доступу в /admin принимает сам компонент (claim/роль через API).
-  if (!admin && !demoMode && !user && window.location.pathname.startsWith('/app')) {
-    return <Navigate to="/login" replace />;
-  }
+  // /app доступен и без логина (локальные ящики на токенах); решения по /admin — внутри Admin.
+  void admin;
   return children;
 }
 

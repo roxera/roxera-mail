@@ -232,3 +232,81 @@ export function usePermanent() {
 
   return { boxes, activeId, setActiveId, msgs, loading, createBox, removeBox, sendMail, touchRead, domains: [...PERMANENT_DOMAINS] };
 }
+
+// ---------- LOCAL NAMED BOXES (без логина: токен вместо пароля, живут в KV) ----------
+export interface LocalBox { id: string; address: string; token: string }
+const LS_BOXES = 'roxera.boxes.v2';
+const LS_BOX_ACTIVE = 'roxera.boxes.active';
+
+export function useLocalBoxes() {
+  const [boxes, setBoxes] = useState<LocalBox[]>(() => {
+    try {
+      const v = JSON.parse(localStorage.getItem(LS_BOXES) || '[]') as LocalBox[];
+      return Array.isArray(v) ? v.filter((b) => b?.id && b?.address && b?.token) : [];
+    } catch { return []; }
+  });
+  const [activeId, setActiveIdState] = useState<string | null>(() => {
+    try { return localStorage.getItem(LS_BOX_ACTIVE); } catch { return null; }
+  });
+  const [msgs, setMsgs] = useState<MailMessage[]>([]);
+  const [loading, setLoading] = useState(false);
+  const active = boxes.find((b) => b.id === activeId) || boxes[0] || null;
+
+  const persist = (list: LocalBox[]) => {
+    setBoxes(list);
+    try { localStorage.setItem(LS_BOXES, JSON.stringify(list)); } catch { /* ignore */ }
+  };
+  const setActiveId = (id: string | null) => {
+    setActiveIdState(id);
+    try { if (id) localStorage.setItem(LS_BOX_ACTIVE, id); else localStorage.removeItem(LS_BOX_ACTIVE); } catch { /* ignore */ }
+  };
+
+  const create = useCallback(async (local: string, domain: string) => {
+    if (boxes.length >= MAX_PERMANENT_PER_USER) throw new Error(`Лимит: максимум ${MAX_PERMANENT_PER_USER} ящиков`);
+    if (!isValidLocal(local)) throw new Error('Некорректное имя (a-z, 0-9, . _ -)');
+    setLoading(true);
+    try {
+      const r = await api.createBox2(local.trim(), domain);
+      const nb: LocalBox = { id: r.id, address: r.address, token: r.token };
+      persist([nb, ...boxes.filter((b) => b.id !== nb.id)].slice(0, MAX_PERMANENT_PER_USER));
+      setActiveId(r.id);
+      return nb;
+    } finally { setLoading(false); }
+  }, [boxes]);
+
+  const remove = useCallback(async (id: string) => {
+    const hit = boxes.find((b) => b.id === id);
+    if (hit) { try { await api.deleteBox(id, hit.token); } catch { /* ignore */ } }
+    persist(boxes.filter((b) => b.id !== id));
+    if (activeId === id) setActiveId(null);
+  }, [boxes, activeId]);
+
+  useEffect(() => {
+    if (!active) { setMsgs([]); return; }
+    let dead = false;
+    const pull = async () => {
+      try {
+        const r = await api.boxInbox(active.id, active.token);
+        if (!dead) setMsgs(r.messages);
+      } catch (e) {
+        if (dead) return;
+        if (e instanceof Error && e.message.startsWith('API 404')) {
+          persist(boxes.filter((b) => b.id !== active.id));
+          setMsgs([]);
+        }
+      }
+    };
+    pull();
+    const t = setInterval(pull, 4000);
+    return () => { dead = true; clearInterval(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active?.id]);
+
+  const send = useCallback(async (id: string, p: { to: string; subject: string; text: string }) => {
+    const hit = boxes.find((b) => b.id === id);
+    if (!hit) throw new Error('Ящик не найден');
+    return api.sendBox(id, hit.token, p);
+  }, [boxes]);
+
+  return { boxes, active, activeId: active?.id || null, setActiveId, msgs, loading, create, remove, send, domains: [...PERMANENT_DOMAINS] };
+}
