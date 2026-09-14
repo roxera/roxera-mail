@@ -171,7 +171,7 @@ export default {
         if (msg.spamVerdict !== 'inbox') {
           await fsAdd(env, 'spamReports', { ts: S(now), to: S(msg.to), from: S(msg.from), score: N(msg.spamScore), rules: S((body.spamRules || []).join(',')), verdict: S(msg.spamVerdict) }).catch(() => {});
         }
-        return J({ ok: true, via: 'kv' }, 200, env);
+        return J({ ok: true, via: 'kv', box: mailboxId, n: arr.length }, 200, env);
       }
       // Тестовая отправка через Cloudflare Email Sending (диагностика, без Firebase/Resend)
       if (url.pathname === '/internal/cf-send' && req.method === 'POST') {
