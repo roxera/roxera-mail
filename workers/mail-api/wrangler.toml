@@ -1,19 +1,18 @@
-{
-  "name": "roxera-mail-api",
-  "main": "src/index.ts",
-  "compatibility_date": "2024-11-01",
-  "compatibility_flags": ["nodejs_compat"],
-  "workers_dev": true,
-  "vars": {
-    "TEMP_TTL_MIN": "15",
-    "TEMP_MAX_AGE_H": "24",
-    "MAX_PERMANENT_PER_USER": "5",
-    "OUTBOUND_DAILY_QUOTA": "100",
-    "CORS_ORIGIN": "https://mail.roxera.xyz"
-  },
-  "triggers": {
-    "crons": ["*/10 * * * *"]
-  }
-}
-# Secrets:
+name = "roxera-mail-api"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[vars]
+TEMP_TTL_MIN = "15"
+TEMP_MAX_AGE_H = "24"
+MAX_PERMANENT_PER_USER = "5"
+OUTBOUND_DAILY_QUOTA = "100"
+CORS_ORIGIN = "https://roxera-mail.pages.dev"
+
+[triggers]
+crons = ["*/10 * * * *"]
+
+# Secrets (ставить через `npx wrangler secret put`, НЕ коммитить):
 # FIREBASE_PROJECT_ID, FIREBASE_WEB_KEY, FIREBASE_ADMIN_TOKEN, RESEND_API_KEY, INTERNAL_KEY
