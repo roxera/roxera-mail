@@ -133,17 +133,21 @@ export default {
 
     // --- temp create ---
     if (url.pathname === '/v1/temp' && req.method === 'POST') {
-      const domains = ['roxera-mail.europe.pp.ua', 'roxera-mail.mnm.pp.ua', 'roxera-mail.ajoure.cfd', 'roxera-mail.roxera.eu.org'];
+      const domains = ['roxera-mail.europe.pp.ua', 'roxera-mail.ajoure.cfd'];
       const domain = domains.includes(body.domain) ? body.domain : domains[Math.floor(Math.random() * domains.length)];
       const address = `${randLocal(10)}@${domain}`;
       const tok = token();
       const ttlMin = parseInt(env.TEMP_TTL_MIN || '15', 10);
       const expiresAt = new Date(Date.now() + ttlMin * 60000).toISOString();
-      const doc: any = await fsAdd(env, 'temp_mailboxes', {
-        address: S(address), domain: S(domain), tokenHash: S(await sha256Hex(tok)), expiresAt: S(expiresAt), createdAt: S(new Date().toISOString()),
-      });
-      const id = String(doc.name.split('/').pop());
-      return J({ id, address, token: tok, expiresAt }, 200, env);
+      try {
+        const doc: any = await fsAdd(env, 'temp_mailboxes', {
+          address: S(address), domain: S(domain), tokenHash: S(await sha256Hex(tok)), expiresAt: S(expiresAt), createdAt: S(new Date().toISOString()),
+        });
+        const id = String(doc.name.split('/').pop());
+        return J({ id, address, token: tok, expiresAt }, 200, env);
+      } catch (e) {
+        return J({ error: 'store_failed', detail: String(e).slice(0, 200) }, 502, env);
+      }
     }
 
     const mExt = url.pathname.match(/^\/v1\/temp\/([^/]+)\/extend$/);
