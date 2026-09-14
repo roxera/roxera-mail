@@ -133,7 +133,8 @@ export default {
         let mailboxId = '';
         let ownerType: string = body.ownerType || 'temp';
         let ownerRef = '';
-        const tid = await env.ROXERA.get('taddr:' + to.toLowerCase()).catch(() => null);
+        const tidRaw = await env.ROXERA.get('taddr:' + to.toLowerCase()).catch(() => null);
+        const tid = String(tidRaw || '').replace(/^"|"$/g, '');
         if (tid) { mailboxId = tid; ownerType = 'temp'; }
         else {
           const t = await fsWhere(env, 'temp_mailboxes', 'address', to.toLowerCase(), 1);
@@ -200,7 +201,7 @@ export default {
       const rec: TempRec = { id, address, domain, tokenHash: await sha256Hex(tok), expiresAt, createdAt: now };
       const ttl = Math.min(ttlMin * 60, 24 * 3600);
       await kvPut(env, 'temp:' + id, rec, ttl);
-      await kvPut(env, 'taddr:' + address.toLowerCase(), id, ttl);
+      await env.ROXERA.put('taddr:' + address.toLowerCase(), id, { expirationTtl: Math.max(60, Math.min(ttl, 86400 * 28)) });
       await fsAdd(env, 'temp_mailboxes', {
         address: S(address), domain: S(domain), tokenHash: S(rec.tokenHash), expiresAt: S(expiresAt), createdAt: S(now),
       }).catch(() => {});
