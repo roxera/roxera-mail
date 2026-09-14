@@ -11,32 +11,61 @@ import type { MailMessage, PermanentMailbox, TempMailbox } from '../lib/types';
 import { api } from '../lib/api';
 
 // ---------- TEMP ----------
-const LS_TEMP = 'roxera.temp';
+const LS_TEMP = 'roxera.temp.v2'; // единый объект { box, token } — переживает перезагрузку
+const LS_TEMP_OLD = 'roxera.temp';
+const LS_TOKEN_OLD = 'roxera.temp.token';
+
+function loadStored(): { box: TempMailbox; token: string } | null {
+  try {
+    const raw = localStorage.getItem(LS_TEMP);
+    if (raw) {
+      const o = JSON.parse(raw) as { box?: TempMailbox; token?: string };
+      if (o?.box?.id && o?.token) return { box: o.box, token: o.token };
+    }
+    // миграция со старого формата (два отдельных ключа)
+    const b = localStorage.getItem(LS_TEMP_OLD);
+    const t = localStorage.getItem(LS_TOKEN_OLD);
+    if (b && t) {
+      const box = JSON.parse(b) as TempMailbox;
+      if (box?.id) return { box, token: t };
+    }
+  } catch { /* ignore */ }
+  return null;
+}
 
 export function useTemp() {
-  const [box, setBox] = useState<TempMailbox | null>(() => {
-    try { return JSON.parse(localStorage.getItem(LS_TEMP) || 'null'); } catch { return null; }
-  });
+  const [stored, setStored] = useState<{ box: TempMailbox; token: string } | null>(loadStored);
   const [msgs, setMsgs] = useState<MailMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [left, setLeft] = useState('');
+  const [gone, setGone] = useState(false); // сервер вернул 404 — адрес истёк или удалён
+  const box = stored?.box || null;
 
-  const save = (b: TempMailbox | null) => {
-    setBox(b);
-    if (b) localStorage.setItem(LS_TEMP, JSON.stringify(b));
-    else localStorage.removeItem(LS_TEMP);
+  const save = (b: TempMailbox | null, token?: string) => {
+    if (b) {
+      const t = token ?? stored?.token ?? '';
+      setStored({ box: b, token: t });
+      localStorage.setItem(LS_TEMP, JSON.stringify({ box: b, token: t }));
+    } else {
+      setStored(null);
+      localStorage.removeItem(LS_TEMP);
+    }
+    try {
+      localStorage.removeItem(LS_TEMP_OLD);
+      localStorage.removeItem(LS_TOKEN_OLD);
+    } catch { /* ignore */ }
   };
+  const curToken = () => stored?.token || '';
 
   const create = useCallback(async (domain?: string) => {
     setLoading(true);
+    setGone(false);
     try {
       try {
         const r = await api.createTemp(domain);
         const b: TempMailbox = { id: r.id, address: r.address, domain: r.address.split('@')[1]!, expiresAt: r.expiresAt, createdAt: new Date().toISOString() };
-        localStorage.setItem('roxera.temp.token', r.token);
-        save(b);
-        setMsgs([]);
-        return;
+          save(b, r.token);
+          return;
       } catch { /* fallback ниже (нет API) */ }
       const address = makeTempAddress(domain);
       const token = makeToken();
@@ -45,15 +74,14 @@ export function useTemp() {
         address, domain: address.split('@')[1]!,
         expiresAt: expiryFromNow(TEMP_TTL_MIN), createdAt: new Date().toISOString(),
       };
-      localStorage.setItem('roxera.temp.token', token);
-      save(b);
+      save(b, token);
       setMsgs([]);
     } finally { setLoading(false); }
   }, []);
 
   const extend = useCallback(async () => {
     if (!box) return;
-    const token = localStorage.getItem('roxera.temp.token') || '';
+    const token = curToken();
     try { const r = await api.extendTemp(box.id, token); save({ ...box, expiresAt: r.expiresAt }); return; }
     catch { /* fallback */ }
     const cur = new Date(box.expiresAt).getTime();
@@ -64,7 +92,7 @@ export function useTemp() {
 
   const destroy = useCallback(async () => {
     if (box) {
-      const token = localStorage.getItem('roxera.temp.token') || '';
+      const token = curToken();
       try { await api.deleteTemp(box.id, token); } catch { /* best effort */ }
     }
     save(null);
@@ -76,13 +104,22 @@ export function useTemp() {
     if (!box) return;
     let dead = false;
     const pull = async () => {
-      const token = localStorage.getItem('roxera.temp.token') || '';
+      const token = curToken();
       try {
         const r = await api.inboxTemp(box.id, token);
         if (dead) return;
+        setGone(false);
         setMsgs(r.messages);
         if (r.expiresAt && r.expiresAt !== box.expiresAt) save({ ...box, expiresAt: r.expiresAt });
-      } catch {
+      } catch (e) {
+        if (dead) return;
+        if (e instanceof Error && e.message.startsWith('API 404')) {
+          // адреса больше нет на сервере (истёк/удалён) — чистим и показываем экран «истёк»
+          setGone(true);
+          save(null);
+          setMsgs([]);
+          return;
+        }
         if (dead) return;
         // нет API — демо-письмо чтобы UI не был пустым
         setMsgs((prev) => prev.length ? prev : [{
@@ -111,7 +148,7 @@ export function useTemp() {
     return () => clearInterval(t);
   }, [box, destroy]);
 
-  return { box, msgs, loading, left, create, extend, destroy, domains: [...TEMP_DOMAINS] };
+  return { box, msgs, loading, left, gone, create, extend, destroy, domains: [...TEMP_DOMAINS] };
 }
 
 // ---------- PERMANENT ----------

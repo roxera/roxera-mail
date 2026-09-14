@@ -70,6 +70,32 @@ async function ctx_Del(env: Env, id: string, address: string): Promise<void> {
   await kvDel(env, 'inbox:' + id);
 }
 
+// ---------- счётчики и админы в KV (работают без Firebase) ----------
+async function kvIncr(env: Env, key: string): Promise<number> {
+  let n = 0;
+  try { n = parseInt((await env.ROXERA.get(key)) || '0', 10) || 0; } catch { n = 0; }
+  n += 1;
+  try { await env.ROXERA.put(key, String(n)); } catch { /* ignore */ }
+  return n;
+}
+async function kvLogConn(env: Env, e: { ts: string; from: string; to: string; verdict: string; subject: string }) {
+  try {
+    const arr: any[] = (await kvGet<any[]>(env, 'connlog')) || [];
+    arr.unshift(e);
+    await kvPut(env, 'connlog', arr.slice(0, 50));
+  } catch { /* ignore */ }
+}
+interface AdminRec { uid: string; email: string; ts: string }
+async function kvAdmins(env: Env): Promise<AdminRec[]> {
+  return (await kvGet<AdminRec[]>(env, 'admins')) || [];
+}
+async function kvStats(env: Env) {
+  const num = async (k: string) => {
+    try { return parseInt((await env.ROXERA.get(k)) || '0', 10) || 0; } catch { return 0; }
+  };
+  return { tempCreated: await num('stat:tempCreated'), mailsIn: await num('stat:mailsIn') };
+}
+
 // Проверка Firebase ID token -> {uid,email} через accounts:lookup (просто и бесплатно)
 async function authUid(req: Request, env: Env): Promise<{ uid: string; email: string } | null> {
   const h = req.headers.get('authorization') || '';
@@ -160,6 +186,8 @@ export default {
         const arr: any[] = (await kvGet<any[]>(env, ik)) || [];
         arr.unshift(msg);
         await kvPut(env, ik, arr.slice(0, 100), 86400);
+        await kvIncr(env, 'stat:mailsIn');
+        await kvLogConn(env, { ts: now, from: msg.from.slice(0, 80), to: msg.to.slice(0, 80), verdict: msg.spamVerdict, subject: msg.subject.slice(0, 80) });
         await fsAdd(env, 'messages', {
           mailboxId: S(mailboxId), ownerType: S(ownerType), ownerRef: S(ownerRef),
           direction: S('in'), from: S(msg.from), to: S(msg.to),
@@ -202,6 +230,7 @@ export default {
       const ttl = Math.min(ttlMin * 60, 24 * 3600);
       await kvPut(env, 'temp:' + id, rec, ttl);
       await env.ROXERA.put('taddr:' + address.toLowerCase(), id, { expirationTtl: Math.max(60, Math.min(ttl, 86400 * 28)) });
+      await kvIncr(env, 'stat:tempCreated');
       await fsAdd(env, 'temp_mailboxes', {
         address: S(address), domain: S(domain), tokenHash: S(rec.tokenHash), expiresAt: S(expiresAt), createdAt: S(now),
       }).catch(() => {});
@@ -279,7 +308,47 @@ export default {
       return J({ inbox24h: 0, outbox24h: 0, activeBoxes: 0, topDomains: [], note: 'До создания Firestore — заглушка. Live-подсчёт на клиенте.' }, 200, env);
     }
 
-    return J({ error: 'not found', routes: ['POST /v1/temp', 'GET /v1/temp/:id/inbox', 'POST /v1/temp/:id/extend', 'DELETE /v1/temp/:id', 'POST /v1/send', 'GET /v1/admin/stats'] }, 404, env);
+    // --- публичная статистика (только счётчики) ---
+    if (url.pathname === '/v1/stats' && req.method === 'GET') {
+      const s = await kvStats(env);
+      const admins = await kvAdmins(env);
+      return J({ ok: true, ...s, adminsCount: admins.length, ts: new Date().toISOString() }, 200, env);
+    }
+
+    // --- моя роль (KV-админы, затем Firestore) ---
+    if (url.pathname === '/v1/admin/whoami' && req.method === 'GET') {
+      const me = await authUid(req, env);
+      if (!me) return J({ error: 'unauthorized' }, 401, env);
+      const admins = await kvAdmins(env);
+      let role = admins.some((a) => a.uid === me.uid) ? 'admin' : 'user';
+      if (role === 'user' && (await userRole(env, me.uid)) === 'admin') role = 'admin';
+      return J({ uid: me.uid, email: me.email, role }, 200, env);
+    }
+
+    // --- захват первого админа (только если админов ещё нет) ---
+    if (url.pathname === '/v1/admin/claim' && req.method === 'POST') {
+      const me = await authUid(req, env);
+      if (!me) return J({ error: 'unauthorized' }, 401, env);
+      const admins = await kvAdmins(env);
+      if (admins.some((a) => a.uid === me.uid)) return J({ ok: true, role: 'admin' }, 200, env);
+      if (admins.length > 0) return J({ error: 'taken' }, 403, env);
+      admins.push({ uid: me.uid, email: me.email, ts: new Date().toISOString() });
+      await kvPut(env, 'admins', admins);
+      return J({ ok: true, role: 'admin' }, 200, env);
+    }
+
+    // --- обзор для админа: счётчики + последние подключения + админы ---
+    if (url.pathname === '/v1/admin/overview' && req.method === 'GET') {
+      const me = await authUid(req, env);
+      if (!me) return J({ error: 'unauthorized' }, 401, env);
+      const admins = await kvAdmins(env);
+      if (!admins.some((a) => a.uid === me.uid)) return J({ error: 'forbidden' }, 403, env);
+      const s = await kvStats(env);
+      const conn = (await kvGet<any[]>(env, 'connlog')) || [];
+      return J({ stats: s, connlog: conn.slice(0, 30), admins }, 200, env);
+    }
+
+    return J({ error: 'not found', routes: ['POST /v1/temp', 'GET /v1/temp/:id/inbox', 'POST /v1/temp/:id/extend', 'DELETE /v1/temp/:id', 'POST /v1/send', 'GET /v1/admin/stats', 'GET /v1/stats', 'GET /v1/admin/whoami', 'POST /v1/admin/claim', 'GET /v1/admin/overview'] }, 404, env);
   },
 
   // Cron: KV чистится сам через expirationTtl; сюда пишем heartbeat в Firestore когда он live.

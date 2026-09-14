@@ -1,141 +1,204 @@
 import { useEffect, useState } from 'react';
-import { addDoc, collection, deleteDoc, getDocs, limit, onSnapshot, orderBy, query, updateDoc } from 'firebase/firestore';
-import { db, isFirebaseConfigured } from '../lib/firebase';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import type { AuditLog, ConnectionLog, DomainRow } from '../lib/types';
-import { api } from '../lib/api';
+import { api, type AdminOverview, type PublicStats } from '../lib/api';
+import { PERMANENT_DOMAINS, TEMP_DOMAINS } from '../lib/config';
+import { toast } from '../components/Toast';
+
+type RoleState = 'unknown' | 'user' | 'admin';
+
+function CheckRow({ ok, label, hint }: { ok: boolean | null; label: string; hint?: string }) {
+  return (
+    <div className="flex items-start gap-3 py-2.5 border-b last:border-0">
+      <span className={`material-symbols-outlined mt-0.5 ${ok === true ? 'text-green-600' : ok === false ? 'text-red-500' : 'text-amber-500'}`}>
+        {ok === true ? 'check_circle' : ok === false ? 'error' : 'pending'}
+      </span>
+      <div>
+        <div className="text-sm font-medium">{label}</div>
+        {hint && <div className="text-xs text-[#5f6368] mt-0.5">{hint}</div>}
+      </div>
+    </div>
+  );
+}
 
 export function Admin() {
-  const { role, demoMode } = useAuth();
-  const [domains, setDomains] = useState<DomainRow[]>([
-    { id: 'roxera-mail.ajoure.cfd', domain: 'roxera-mail.ajoure.cfd', type: 'temp', status: 'active', dnsVerified: false, resendVerified: false, createdAt: new Date().toISOString() },
-    { id: 'ajoure.cfd', domain: 'ajoure.cfd', type: 'permanent', status: 'active', dnsVerified: false, resendVerified: false, createdAt: new Date().toISOString() },
-  ]);
-  const [conn, setConn] = useState<ConnectionLog[]>([]);
-  const [audit, setAudit] = useState<AuditLog[]>([]);
-  const [stats, setStats] = useState<{ inbox24h: number; outbox24h: number; activeBoxes: number } | null>(null);
-  const [form, setForm] = useState({ domain: '', type: 'both' as DomainRow['type'] });
-  const [msg, setMsg] = useState('');
+  const { user, loading: authLoading, demoMode, logout } = useAuth();
+  const [stats, setStats] = useState<PublicStats | null>(null);
+  const [apiOk, setApiOk] = useState<boolean | null>(null);
+  const [role, setRole] = useState<RoleState>('unknown');
+  const [ov, setOv] = useState<AdminOverview | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
 
   useEffect(() => {
-    if (!isFirebaseConfigured()) return;
-    const u1 = onSnapshot(collection(db, 'domains'), (s) => setDomains(s.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<DomainRow, 'id'>) })) as DomainRow[]));
-    const u2 = onSnapshot(query(collection(db, 'connectionLogs'), orderBy('ts', 'desc'), limit(50)), (s) => setConn(s.docs.map((d) => ({ id: d.id, ...(d.data() as object) })) as ConnectionLog[]));
-    const u3 = onSnapshot(query(collection(db, 'auditLogs'), orderBy('ts', 'desc'), limit(50)), (s) => setAudit(s.docs.map((d) => ({ id: d.id, ...(d.data() as object) })) as AuditLog[]));
-    api.adminStats().then(setStats).catch(() => {});
-    return () => { u1(); u2(); u3(); };
+    api.stats().then((s) => { setStats(s); setApiOk(true); }).catch(() => setApiOk(false));
   }, []);
 
-  const addDomain = async () => {
-    setMsg('');
-    const d = form.domain.trim().toLowerCase();
-    if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(d)) { setMsg('Некорректный домен'); return; }
-    const row = { domain: d, type: form.type, status: 'active', dnsVerified: false, resendVerified: false, createdAt: new Date().toISOString() };
-    if (isFirebaseConfigured()) await addDoc(collection(db, 'domains'), row);
-    setDomains((v) => [...v, { id: d, ...row } as DomainRow]);
-    setForm({ domain: '', type: 'both' });
-  };
+  useEffect(() => {
+    if (!user) { setRole('unknown'); setOv(null); return; }
+    setRole('unknown');
+    api.whoami().then((w) => setRole(w.role === 'admin' ? 'admin' : 'user')).catch(() => setRole('user'));
+  }, [user]);
 
-  const toggleDomain = async (r: DomainRow) => {
-    const next = r.status === 'active' ? 'disabled' : 'active';
-    if (isFirebaseConfigured()) {
-      const s = await getDocs(collection(db, 'domains'));
-      const hit = s.docs.find((x) => (x.data() as { domain: string }).domain === r.domain);
-      if (hit) await updateDoc(hit.ref, { status: next });
-      else await addDoc(collection(db, 'domains'), { ...r, status: next });
-    }
-    setDomains((v) => v.map((x) => (x.domain === r.domain ? { ...x, status: next as 'active' | 'disabled' } : x)));
-  };
+  useEffect(() => {
+    if (role === 'admin') api.adminOverview().then(setOv).catch(() => setOv(null));
+  }, [role]);
 
-  const delDomain = async (r: DomainRow) => {
-    if (isFirebaseConfigured()) {
-      try {
-        const s = await getDocs(collection(db, 'domains'));
-        const hit = s.docs.find((x) => (x.data() as { domain: string }).domain === r.domain);
-        if (hit) await deleteDoc(hit.ref);
-      } catch { /* ignore */ }
-    }
-    setDomains((v) => v.filter((x) => x.domain !== r.domain));
+  const claim = async () => {
+    setErr('');
+    setBusy(true);
+    try {
+      await api.claimAdmin();
+      setRole('admin');
+      toast('Вы назначены администратором');
+    } catch (e) { setErr(e instanceof Error ? e.message : 'Ошибка'); }
+    finally { setBusy(false); }
   };
 
   return (
     <div className="min-h-full bg-[#f6f8fc]">
-      <header className="h-16 bg-white border-b flex items-center px-6 gap-3">
-        <span className="material-symbols-outlined">admin_panel_settings</span>
-        <b>Админ-панель Roxera Mail</b>
-        <span className="text-xs text-[#5f6368]">роль: {demoMode ? 'demo' : role || '…'}</span>
+      <header className="h-16 bg-white border-b border-[#dadce0] flex items-center px-4 md:px-6 gap-3 sticky top-0 z-10">
+        <span className="w-9 h-9 rounded-xl grid place-items-center text-white" style={{ background: '#1a73e8' }}>
+          <span className="material-symbols-outlined">admin_panel_settings</span>
+        </span>
+        <div>
+          <div className="font-medium leading-tight">Админ-панель</div>
+          <div className="text-xs text-[#5f6368] leading-tight">
+            {authLoading ? '…' : user ? `${user.email} · ${role === 'unknown' ? 'роль…' : role}` : demoMode ? 'демо-режим' : 'не вошли'}
+          </div>
+        </div>
         <span className="flex-1" />
-        <a href="/app" className="text-sm text-[#1a73e8]">← в кабинет</a>
+        <Link to="/app" className="text-sm text-[#1a73e8] font-medium hover:bg-[#e8f0fe] rounded-full px-4 py-2">← в кабинет</Link>
+        {user && <button onClick={() => logout()} className="text-sm text-[#5f6368] hover:underline">Выйти</button>}
       </header>
-      {demoMode && <div className="m-4 bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm">Демо-режим без Firebase: изменения локальные. Подключите .env чтобы управлять продом.</div>}
+
       <main className="max-w-6xl mx-auto p-4 space-y-4">
-        <section className="grid sm:grid-cols-3 gap-3">
+        {apiOk === false && (
+          <div className="bg-red-50 border border-red-200 rounded-2xl p-4 text-sm text-red-800">
+            API воркера недоступно. Проверьте деплой <code>roxera-mail-api</code> и <code>VITE_API_BASE</code>.
+          </div>
+        )}
+
+        <section className="grid grid-cols-3 gap-3">
           {[
-            ['Входящие 24ч', stats?.inbox24h ?? conn.filter((c) => c.direction === 'in').length],
-            ['Исходящие 24ч', stats?.outbox24h ?? conn.filter((c) => c.direction === 'out').length],
-            ['Активные ящики', stats?.activeBoxes ?? domains.filter((d) => d.status === 'active').length],
-          ].map(([k, v]) => (
-            <div key={k as string} className="bg-white border rounded-2xl p-5">
-              <div className="text-sm text-[#5f6368]">{k}</div>
-              <div className="text-3xl font-medium mt-1">{v as number}</div>
+            ['Временных ящиков', stats?.tempCreated ?? '—', 'timer'],
+            ['Писем принято', stats?.mailsIn ?? '—', 'inbox'],
+            ['Админов', stats?.adminsCount ?? '—', 'badge'],
+          ].map(([k, v, icon]) => (
+            <div key={k as string} className="bg-white border border-[#dadce0] rounded-2xl p-4 md:p-5">
+              <div className="flex items-center gap-2 text-sm text-[#5f6368]">
+                <span className="material-symbols-outlined text-[18px]">{icon}</span>{k}
+              </div>
+              <div className="text-3xl font-medium mt-1">{v as number | string}</div>
             </div>
           ))}
         </section>
 
-        <section className="bg-white border rounded-2xl p-5">
-          <h2 className="font-medium">Домены (temp / permanent / both)</h2>
-          <div className="flex flex-col sm:flex-row gap-2 mt-3">
-            <input value={form.domain} onChange={(e) => setForm({ ...form, domain: e.target.value })} placeholder="new-domain.example" className="border rounded-full px-4 py-2 text-sm flex-1" />
-            <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value as DomainRow['type'] })} className="border rounded-full px-4 py-2 text-sm">
-              <option value="temp">temp (только приём)</option>
-              <option value="permanent">permanent (приём+отправка)</option>
-              <option value="both">both</option>
-            </select>
-            <button onClick={addDomain} className="gmail-btn-blue rounded-full px-5 py-2 text-sm">Добавить</button>
-          </div>
-          {msg && <div className="text-red-600 text-sm mt-2">{msg}</div>}
-          <div className="mt-3 divide-y text-sm">
-            {domains.map((d) => (
-              <div key={d.domain} className="py-2.5 flex items-center gap-3">
-                <span className={`w-2.5 h-2.5 rounded-full ${d.status === 'active' ? 'bg-green-500' : 'bg-gray-300'}`} />
-                <span className="font-medium flex-1 break-all">{d.domain} <span className="text-xs text-[#5f6368]">[{d.type}]</span></span>
-                <span className="text-xs text-[#5f6368] hidden md:inline">DNS {d.dnsVerified ? '✓' : '×'} · Resend {d.resendVerified ? '✓' : '×'}</span>
-                <button onClick={() => toggleDomain(d)} className="border rounded-full px-3 py-1 text-xs">{d.status === 'active' ? 'Отключить' : 'Включить'}</button>
-                <button onClick={() => delDomain(d)} className="text-red-600 text-xs">Удалить</button>
-              </div>
-            ))}
-          </div>
-          <div className="text-xs text-[#5f6368] mt-3">Каждый новый домен: 1) NS на Cloudflare → 2) Email Routing Catch-all → Worker mail-inbound → 3) SPF/DKIM/DMARC + верификация в Resend (для отправки). Детали — SETUP.md.</div>
-        </section>
+        {!user && !authLoading && (
+          <section className="bg-white border border-[#dadce0] rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center gap-3">
+            <span className="material-symbols-outlined text-4xl text-[#1a73e8]">lock</span>
+            <div className="flex-1">
+              <div className="font-medium">Войдите, чтобы управлять сервисом</div>
+              <div className="text-sm text-[#5f6368]">Первый вошедший может забрать роль администратора одной кнопкой.</div>
+            </div>
+            <Link to="/login" className="gmail-btn-blue rounded-full px-6 py-2.5 text-sm font-medium text-center">Войти</Link>
+          </section>
+        )}
 
-        <section className="grid md:grid-cols-2 gap-4">
-          <div className="bg-white border rounded-2xl p-5">
-            <h2 className="font-medium mb-2">Логи соединений in/out (последние 50)</h2>
-            <div className="text-xs space-y-1.5 max-h-80 overflow-auto">
-              {conn.length === 0 && <div className="text-[#5f6368]">Пока пусто — логи пишет Worker mail-inbound/mail-api.</div>}
-              {conn.map((c) => (
-                <div key={c.id} className="border-b pb-1.5">
-                  <span className={`rounded px-1.5 py-0.5 ${c.direction === 'in' ? 'bg-blue-50 text-blue-700' : 'bg-green-50 text-green-700'}`}>{c.direction}</span>{' '}
-                  {c.from} → {c.to} <span className="text-[#5f6368]">[{c.status}{c.reason ? `: ${c.reason}` : ''}]</span>
+        {user && role === 'user' && (
+          <section className="bg-white border border-[#dadce0] rounded-2xl p-5">
+            <div className="font-medium">Нет прав администратора</div>
+            {stats && stats.adminsCount === 0 ? (
+              <div className="mt-2">
+                <p className="text-sm text-[#5f6368]">Админов пока нет — вы можете стать первым.</p>
+                <button disabled={busy} onClick={claim} className="gmail-btn-blue rounded-full px-6 py-2.5 text-sm font-medium mt-3 disabled:opacity-50">
+                  {busy ? '…' : 'Стать администратором'}
+                </button>
+              </div>
+            ) : (
+              <p className="text-sm text-[#5f6368] mt-1">Попросите действующего админа выдать вам доступ.</p>
+            )}
+            {err && <div className="text-red-600 text-sm mt-2">{err}</div>}
+          </section>
+        )}
+
+        {role === 'admin' && (
+          <>
+            <section className="bg-white border border-[#dadce0] rounded-2xl p-5">
+              <h2 className="font-medium mb-1">Входящие подключения (последние {ov?.connlog.length ?? 0})</h2>
+              {!ov ? (
+                <div className="space-y-2 mt-2">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-8" />)}</div>
+              ) : ov.connlog.length === 0 ? (
+                <div className="text-sm text-[#5f6368] mt-2">Пока пусто — сюда попадает каждое входящее письмо (отправитель, получатель, вердикт анти-спама).</div>
+              ) : (
+                <div className="text-xs mt-2 max-h-80 overflow-auto divide-y">
+                  {ov.connlog.map((c, i) => (
+                    <div key={i} className="py-2 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                      <span className="text-[#5f6368] whitespace-nowrap">{new Date(c.ts).toLocaleString('ru-RU')}</span>
+                      <span className="font-medium break-all">{c.from}</span>
+                      <span className="text-[#5f6368]">→</span>
+                      <span className="break-all">{c.to}</span>
+                      <span className={`rounded-full px-2 py-0.5 ${c.verdict === 'inbox' ? 'bg-green-50 text-green-700' : 'bg-amber-100 text-amber-800'}`}>{c.verdict}</span>
+                      <span className="text-[#5f6368] truncate w-full">{c.subject}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section className="bg-white border border-[#dadce0] rounded-2xl p-5">
+              <h2 className="font-medium mb-2">Администраторы ({ov?.admins.length ?? 0})</h2>
+              {ov?.admins.map((a) => (
+                <div key={a.uid} className="text-sm py-1.5 border-b last:border-0 flex gap-2">
+                  <span className="material-symbols-outlined text-[18px] text-[#5f6368]">account_circle</span>
+                  <span className="font-medium">{a.email || a.uid}</span>
+                  <span className="text-xs text-[#5f6368] ml-auto">{new Date(a.ts).toLocaleDateString('ru-RU')}</span>
+                </div>
+              ))}
+            </section>
+          </>
+        )}
+
+        <section className="bg-white border border-[#dadce0] rounded-2xl p-5">
+          <h2 className="font-medium">Домены</h2>
+          <div className="grid md:grid-cols-2 gap-4 mt-3">
+            <div>
+              <div className="text-xs font-medium text-[#5f6368] uppercase tracking-wide mb-1">Временная почта (только приём)</div>
+              {TEMP_DOMAINS.map((d) => (
+                <div key={d} className="flex items-center gap-2 text-sm py-1.5 border-b last:border-0">
+                  <span className="w-2.5 h-2.5 rounded-full bg-green-500" />
+                  <span className="font-medium break-all">{d}</span>
+                </div>
+              ))}
+            </div>
+            <div>
+              <div className="text-xs font-medium text-[#5f6368] uppercase tracking-wide mb-1">Постоянные ящики (приём + отправка)</div>
+              {PERMANENT_DOMAINS.map((d) => (
+                <div key={d} className="flex items-center gap-2 text-sm py-1.5 border-b last:border-0">
+                  <span className="w-2.5 h-2.5 rounded-full bg-green-500" />
+                  <span className="font-medium break-all">{d}</span>
                 </div>
               ))}
             </div>
           </div>
-          <div className="bg-white border rounded-2xl p-5">
-            <h2 className="font-medium mb-2">Аудит действий + анти-спам отчёт</h2>
-            <div className="text-xs space-y-1.5 max-h-80 overflow-auto">
-              {audit.length === 0 && <div className="text-[#5f6368]">Пока пусто. Сюда пишутся login/create/send/block + verdict quarantine/blocked.</div>}
-              {audit.map((a) => (
-                <div key={a.id} className="border-b pb-1.5">{a.ts} · <b>{a.actor}</b> · {a.action} · {a.target || ''}</div>
-              ))}
-            </div>
-            <div className="text-xs text-[#5f6368] mt-3">Безопасность: роли admin/moderator/user (customClaims), лимиты 5/uid, блок-листы в settings/global, хэширование IP, санитизация HTML (DOMPurify), CSP.</div>
+          <div className="text-xs text-[#5f6368] mt-3 leading-relaxed">
+            Для приёма на <code>roxera-mail.*</code> нужны MX-записи на каждом субдомене (route1/2/3.mx.cloudflare.net).
+            Для отправки через Resend — DKIM/SPF/TXT по его карточкам доменов. Расширенное управление (добавление доменов, блок-листы) включится вместе с Firestore.
+          </div>
+        </section>
+
+        <section className="bg-white border border-[#dadce0] rounded-2xl p-5">
+          <h2 className="font-medium">Состояние запуска</h2>
+          <div className="mt-1">
+            <CheckRow ok={apiOk} label="API воркера отвечает" hint="KV-хранилище, счётчики, инжест писем" />
+            <CheckRow ok={user ? true : false} label="Вход через Firebase Auth" hint={user ? user.email || '' : 'Нужны включённые провайдеры Google/GitHub в консоли Firebase'} />
+            <CheckRow ok={role === 'admin' ? true : null} label="Роль администратора" hint={role === 'admin' ? 'Доступ к логам открыт' : 'Первый вошедший забирает роль кнопкой выше'} />
+            <CheckRow ok={null} label="База Firestore + Storage" hint="Создай в консоли Firebase (Production, eur3) — оживут кабинет, отправка, вложения" />
+            <CheckRow ok={null} label="MX на roxera-mail.* субдоменах" hint="6 записей в Cloudflare DNS — иначе Gmail не доставит письма на временные адреса" />
+            <CheckRow ok={null} label="Resend: DKIM/SPF/TXT" hint="8 записей из карточек доменов в Resend — иначе отправка не верифицируется" />
           </div>
         </section>
       </main>
     </div>
   );
 }
-
-// Phase 2 (заложено): RBAC-матрица, SIEM-экспорт, публичные API-ключи.
-export const ADMIN_PHASE2 = ['rbac-matrix', 'siem-export', 'public-api-keys'] as const;

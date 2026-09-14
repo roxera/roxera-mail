@@ -9,6 +9,13 @@ async function idToken(): Promise<string | null> {
 
 import type { MailMessage } from './types';
 
+export interface PublicStats { ok: boolean; tempCreated: number; mailsIn: number; adminsCount: number; ts: string }
+export interface AdminOverview {
+  stats: { tempCreated: number; mailsIn: number };
+  connlog: { ts: string; from: string; to: string; verdict: string; subject: string }[];
+  admins: { uid: string; email: string; ts: string }[];
+}
+
 async function reqRaw<T>(path: string, init?: RequestInit): Promise<T> {
   const token = await idToken();
   const r = await fetch(`${API_BASE}${path}`, {
@@ -37,4 +44,8 @@ export const api = {
   send: (p: { mailboxId: string; to: string; subject: string; text: string; html?: string }) =>
     req<{ id: string }>('/v1/send', { method: 'POST', body: JSON.stringify(p) }),
   adminStats: () => req<{ inbox24h: number; outbox24h: number; activeBoxes: number; topDomains: { domain: string; n: number }[] }>('/v1/admin/stats'),
+  stats: () => req<PublicStats>('/v1/stats'),
+  whoami: () => req<{ uid: string; email: string; role: string }>('/v1/admin/whoami'),
+  claimAdmin: () => req<{ ok: boolean; role: string }>('/v1/admin/claim', { method: 'POST', body: '{}' }),
+  adminOverview: () => req<AdminOverview>('/v1/admin/overview'),
 };

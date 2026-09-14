@@ -61,3 +61,12 @@ body {
 /* scrollbar like Gmail */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: #dadce0; border-radius: 8px; border: 2px solid #f6f8fc; }
+
+/* toasts */
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(12px) scale(.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.toast-in {
+  animation: toastIn .2s ease-out;
+}
