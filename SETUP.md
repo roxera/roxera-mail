@@ -1,5 +1,14 @@
 # Roxera Mail — SETUP (100% free: Cloudflare Pages + Firebase + Resend)
 
+## 0. LIVE-статус (14.09.2026, проверено)
+- ✅ Сайт: https://roxera-mail.pages.dev/ (env выставлены, деплой с `main` — авто).
+- ✅ API: https://roxera-mail-api.roxera.workers.dev (KV-хранилище `ROXERA`, авточистка по TTL).
+- ✅ TempMail цикл: create → ingest → inbox — работает (`INBOX_N=1`, проверено вживую).
+- ✅ Приём: Email Routing + MX (`route*.mx.cloudflare.net`) + catch-all → `roxera-mail-inbound` на `europe.pp.ua`, `ajoure.cfd`.
+- ✅ Resend: домены созданы (EU), ключ ротирован (sending-only), засвеченный удалён.
+- ⏳ Ждёт 1 визита в Firebase-консоль: создать Firestore DB (Production, eur3) + Storage bucket + включить Auth-провайдеры Google/GitHub. После этого: rules зальются, оживут кабинет/отправка/админка.
+- ⏳ Ждёт DNS: 8 записей для Resend (DKIM/SPF/MX/CNAME, список у владельца) — после них автоверификация отправки. Либо API-токен CF с Zone-DNS-Edit — и я внесу сам.
+
 ## 1. Что уже сделано в коде
 - `src/` — SPA в стиле Gmail: `/` лендинг, `/temp` временная почта (15 мин, продлить/пересоздать), `/app` кабинет (до 5 ящиков, приём+отправка, шифрование, PDF), `/login` (Google+GitHub), `/admin` (домены, дашборд, логи in/out, аудит, анти-спам).
 - `workers/mail-inbound` — Email Worker: парсинг (postal-mime), проверка домена, скоринг спама, пересылка в `mail-api/internal/ingest`.
