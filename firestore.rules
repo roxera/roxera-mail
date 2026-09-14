@@ -1,0 +1,67 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAdmin() {
+      return request.auth != null && request.auth.token.role == 'admin';
+    }
+    function isMod() {
+      return request.auth != null && (request.auth.token.role == 'admin' || request.auth.token.role == 'moderator');
+    }
+    function owner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    // Пользователи: сам + админ
+    match /users/{uid} {
+      allow read: if owner(uid) || isAdmin();
+      allow write: if owner(uid) || isAdmin();
+    }
+
+    // Постоянные ящики: max 5 enforced в Worker + Rules (create только свои)
+    match /mailboxes/{id} {
+      allow read: if isAdmin() || (request.auth != null && resource.data.userId == request.auth.uid);
+      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isAdmin() || (request.auth != null && resource.data.userId == request.auth.uid);
+    }
+
+    // Письма постоянных ящиков: владелец ящика (проверка mailboxId через get) или админ.
+    // Упрощение для MVP: ownerRef == uid.
+    match /messages/{id} {
+      allow read: if isAdmin() || (request.auth != null && resource.data.ownerRef == request.auth.uid);
+      allow create: if request.auth != null; // отправка создаёт outbox; inbound пишет через Admin SDK (bypass)
+      allow update, delete: if isAdmin() || (request.auth != null && resource.data.ownerRef == request.auth.uid);
+    }
+
+    // Temp и логи — только через Worker (Admin SDK bypasses rules), клиентам закрыто
+    match /temp_mailboxes/{id} {
+      allow read, write: if isAdmin();
+    }
+    match /connectionLogs/{id} {
+      allow read: if isMod();
+      allow write: if false;
+    }
+    match /auditLogs/{id} {
+      allow read: if isMod();
+      allow write: if request.auth != null; // клиент пишет send/login, сервер дописывает
+    }
+    match /spamReports/{id} {
+      allow read: if isMod();
+      allow write: if false;
+    }
+    match /domains/{id} {
+      allow read: if true; // нужен список активных доменов для генерации
+      allow write: if isAdmin();
+    }
+    match /settings/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    match /stats_daily/{id} {
+      allow read: if isMod();
+      allow write: if false;
+    }
+    match /apiKeys/{id} {
+      allow read, write: if isAdmin();
+    }
+  }
+}

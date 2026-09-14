@@ -1,0 +1,9 @@
+{
+  "name": "roxera-mail-api",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "postal-mime": "^2.4.3"
+  }
+}
