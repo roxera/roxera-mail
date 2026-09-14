@@ -1,6 +1,7 @@
 // Roxera Mail API Worker: temp CRUD, send via Resend/CF, inbound ingest, cron.
 // Хранение: Cloudflare KV — primary (работает без Firebase), Firestore — best-effort
 // (админка/аналитика подхватят данные, когда база будет создана). Auth: Firebase accounts:lookup.
+import { EmailMessage } from 'cloudflare:email';
 
 interface Env {
   TEMP_TTL_MIN: string; TEMP_MAX_AGE_H: string; MAX_PERMANENT_PER_USER: string;
@@ -179,7 +180,7 @@ export default {
         const f = String(from || 'test@europe.pp.ua');
         const raw = `From: ${f}\r\nTo: ${to}\r\nSubject: ${String(subject || 'Roxera test')}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${String(text || 'hello from Roxera')}`;
         try {
-          await env.SEB.send(new (EmailMessage as any)(f, to, raw));
+          await env.SEB.send(new EmailMessage(f, to, raw));
           return J({ ok: true, via: 'cf' }, 200, env);
         } catch (e) { return J({ error: 'cf_send_failed', detail: String(e).slice(0, 300) }, 502, env); }
       }
@@ -256,7 +257,7 @@ export default {
       let via = 'resend';
       if (!r.ok) {
         const raw = `From: ${fromAddr}\r\nTo: ${to}\r\nSubject: ${String(subject || '(без темы)')}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${String(text || '')}`;
-        try { await env.SEB.send(new (EmailMessage as any)(fromAddr, to, raw)); via = 'cf-fallback'; }
+        try { await env.SEB.send(new EmailMessage(fromAddr, to, raw)); via = 'cf-fallback'; }
         catch { return J({ error: `resend ${r.status}` }, 502, env); }
       }
       const now = new Date().toISOString();
