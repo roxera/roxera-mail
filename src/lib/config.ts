@@ -8,20 +8,18 @@ export const TEMP_EXTEND_MIN = 15;
 export const MAX_PERMANENT_PER_USER = 5;
 
 // Temp-пул — только приём (как просил заказчик: с префиксом roxera-mail.)
+// Активны только домены с рабочим Email Routing. mnm.pp.ua (нет зоны в CF)
+// и roxera.eu.org (NS не делегированы, pending) подключаются позже через /admin.
 export const TEMP_DOMAINS = [
   'roxera-mail.europe.pp.ua',
-  'roxera-mail.mnm.pp.ua',
   'roxera-mail.ajoure.cfd',
-  'roxera-mail.roxera.eu.org',
 ] as const;
 
 // Permanent-пул — те же корни без префикса (приём + отправка через Resend).
-// Если NS-доступа к корням нет — админ в /admin переключит permanent на roxera-mail.* (см. SETUP.md).
+// Отправка работает только с верифицированных в Resend доменов (см. /admin).
 export const PERMANENT_DOMAINS = [
   'europe.pp.ua',
-  'mnm.pp.ua',
   'ajoure.cfd',
-  'roxera.eu.org',
 ] as const;
 
 export const API_BASE =

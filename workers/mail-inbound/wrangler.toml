@@ -5,8 +5,8 @@ compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
 [vars]
-TEMP_DOMAINS = "roxera-mail.europe.pp.ua,roxera-mail.mnm.pp.ua,roxera-mail.ajoure.cfd,roxera-mail.roxera.eu.org"
-PERMANENT_DOMAINS = "europe.pp.ua,mnm.pp.ua,ajoure.cfd,roxera.eu.org"
+TEMP_DOMAINS = "roxera-mail.europe.pp.ua,roxera-mail.ajoure.cfd"
+PERMANENT_DOMAINS = "europe.pp.ua,ajoure.cfd"
 BLOCK_FROM = ""
 BLOCK_DOMAINS = ""
 BLOCK_WORDS = "viagra,crypto giveaway,inheritance fund"
