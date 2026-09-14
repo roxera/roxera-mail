@@ -7,6 +7,8 @@
 - ✅ Приём: Email Routing + MX (`route*.mx.cloudflare.net`) + catch-all → `roxera-mail-inbound` на `europe.pp.ua`, `ajoure.cfd`.
 - ✅ Resend: домены созданы (EU), ключ ротирован (sending-only), засвеченный удалён.
 - ⏳ Ждёт 1 визита в Firebase-консоль: создать Firestore DB (Production, eur3) + Storage bucket + включить Auth-провайдеры Google/GitHub. После этого: rules зальются, оживут кабинет/отправка/админка.
+  **ОБНОВЛЕНИЕ:** Firebase-консоль больше не нужна! База создана (`eur3`, NATIVE), rules+индексы залиты через API, Google-вход включён, воркер сам минтит GCP-токены (ключ ротирован, засвеченный удалён).
+  Осталось в консоли только: Storage bucket (вложения; упирается в отсутствие биллинга — некритично) и GitHub-провайдер (нужен OAuth App с github.com).
 - ⏳ Ждёт DNS: 8 записей для Resend (DKIM/SPF/MX/CNAME, список у владельца) — после них автоверификация отправки. Либо API-токен CF с Zone-DNS-Edit — и я внесу сам.
 
 ## 1. Что уже сделано в коде

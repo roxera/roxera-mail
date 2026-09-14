@@ -7,6 +7,7 @@ interface Env {
   TEMP_TTL_MIN: string; TEMP_MAX_AGE_H: string; MAX_PERMANENT_PER_USER: string;
   OUTBOUND_DAILY_QUOTA: string; CORS_ORIGIN: string;
   FIREBASE_PROJECT_ID: string; FIREBASE_WEB_KEY: string; FIREBASE_ADMIN_TOKEN: string;
+  FIREBASE_SA_JSON: string;
   RESEND_API_KEY: string; INTERNAL_KEY: string;
   ROXERA: any; // KVNamespace
   SEB: any; // send_email binding (Cloudflare Email Sending fallback)
@@ -15,7 +16,43 @@ interface Env {
 const FS = (env: Env, path: string) =>
   `https://firestore.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents${path}`;
 
-const fsHeaders = (env: Env) => ({ 'content-type': 'application/json', authorization: `Bearer ${env.FIREBASE_ADMIN_TOKEN}` });
+const fsHeaders = (_env: Env) => ({ 'content-type': 'application/json', authorization: 'Bearer ' });
+
+// Долгоживущая авторизация в Firestore: самоминтинг OAuth-токена из
+// сервисного ключа (секрет FIREBASE_SA_JSON), fallback — статичный токен.
+let _gtok = '';
+let _gexp = 0;
+async function gcpToken(env: Env): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  if (_gtok && _gexp > now + 120) return _gtok;
+  try {
+    const sa = JSON.parse(env.FIREBASE_SA_JSON || 'null');
+    if (sa?.private_key && sa?.client_email) {
+      const enc = new TextEncoder();
+      const b64u = (s: string) => btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      const head = b64u(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+      const bod = b64u(JSON.stringify({ iss: sa.client_email, scope: 'https://www.googleapis.com/auth/datastore', aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 }));
+      const pem = String(sa.private_key).replace(/\\n/g, '\n');
+      const b64 = pem.split('\n').filter((l) => l && !l.startsWith('-----')).join('');
+      const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const key = await crypto.subtle.importKey('pkcs8', bin.buffer as ArrayBuffer, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
+      const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, enc.encode(head + '.' + bod));
+      let s = '';
+      new Uint8Array(sig).forEach((x) => { s += String.fromCharCode(x); });
+      const assertion = `${head}.${bod}.${b64u(s)}`;
+      const r = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${assertion}`,
+      });
+      const jj = (await r.json()) as { access_token?: string };
+      if (jj.access_token) { _gtok = jj.access_token; _gexp = now + 3500; return _gtok; }
+    }
+  } catch { /* fall through */ }
+  return env.FIREBASE_ADMIN_TOKEN || '';
+}
+async function ah(env: Env): Promise<Record<string, string>> {
+  return { 'content-type': 'application/json', authorization: `Bearer ${await gcpToken(env)}` };
+}
 
 // Firestore value helpers
 const S = (s: string) => ({ stringValue: s });
@@ -111,7 +148,7 @@ async function authUid(req: Request, env: Env): Promise<{ uid: string; email: st
 }
 
 async function fsAdd(env: Env, col: string, fields: Record<string, unknown>) {
-  const r = await fetch(FS(env, `/${col}`), { method: 'POST', headers: fsHeaders(env), body: JSON.stringify({ fields }) });
+  const r = await fetch(FS(env, `/${col}`), { method: 'POST',   headers: await ah(env), body: JSON.stringify({ fields }) });
   if (!r.ok) throw new Error(`firestore add ${col}: ${r.status} ${await r.text()}`);
   return r.json() as Promise<any>;
 }
@@ -119,7 +156,7 @@ async function fsAdd(env: Env, col: string, fields: Record<string, unknown>) {
 // structuredQuery поиск по полю ==
 async function fsWhere(env: Env, col: string, field: string, value: string, lim = 5): Promise<any[]> {
   const r = await fetch(`https://firestore.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents:runQuery`, {
-    method: 'POST', headers: fsHeaders(env),
+    method: 'POST',   headers: await ah(env),
     body: JSON.stringify({ structuredQuery: { from: [{ collectionId: col }], where: { fieldFilter: { field: { fieldPath: field }, op: 'EQUAL', value: S(value) } }, limit: lim } }),
   });
   if (!r.ok) return [];
@@ -129,7 +166,7 @@ async function fsWhere(env: Env, col: string, field: string, value: string, lim 
 const fv = (f: any, k: string) => f?.[k]?.stringValue ?? f?.[k]?.integerValue ?? '';
 
 async function userRole(env: Env, uid: string): Promise<string> {
-  const r = await fetch(FS(env, `/users/${uid}`), { headers: fsHeaders(env) }).catch(() => null) as any;
+  const r = await fetch(FS(env, `/users/${uid}`), {   headers: await ah(env) }).catch(() => null) as any;
   if (!r || !r.ok) return 'user';
   const j: any = await r.json();
   return j.fields?.role?.stringValue || 'user';
@@ -334,7 +371,7 @@ export default {
       const ttl = Math.max(60, Math.floor((next - Date.now()) / 1000));
       await kvPut(env, 'temp:' + rec.id, rec, ttl);
       await kvPut(env, 'taddr:' + rec.address.toLowerCase(), rec.id, ttl);
-      await fetch(FS(env, `/temp_mailboxes/${rec.id}?updateMask.fieldPaths=expiresAt`), { method: 'PATCH', headers: fsHeaders(env), body: JSON.stringify({ fields: { expiresAt: S(rec.expiresAt) } }) }).catch(() => {});
+      await fetch(FS(env, `/temp_mailboxes/${rec.id}?updateMask.fieldPaths=expiresAt`), { method: 'PATCH',   headers: await ah(env), body: JSON.stringify({ fields: { expiresAt: S(rec.expiresAt) } }) }).catch(() => {});
       return J({ expiresAt: rec.expiresAt }, 200, env);
     }
 
@@ -342,7 +379,7 @@ export default {
     if (mDel && req.method === 'DELETE') {
       const rec = await kvGet<TempRec>(env, 'temp:' + mDel[1]);
       if (rec && (await sha256Hex(body.token || '')) === rec.tokenHash) await ctx_Del(env, rec.id, rec.address);
-      await fetch(FS(env, `/temp_mailboxes/${mDel[1]}`), { method: 'DELETE', headers: fsHeaders(env) }).catch(() => {});
+      await fetch(FS(env, `/temp_mailboxes/${mDel[1]}`), { method: 'DELETE',   headers: await ah(env) }).catch(() => {});
       return J({ ok: true }, 200, env);
     }
 
@@ -352,7 +389,7 @@ export default {
       if (!me) return J({ error: 'unauthorized' }, 401, env);
       const { mailboxId, to, subject, text, html } = body;
       if (!mailboxId || !to) return J({ error: 'mailboxId/to required' }, 400, env);
-      const fromDoc: any = await fetch(FS(env, `/mailboxes/${mailboxId}`), { headers: fsHeaders(env) }).then((r) => r.json()).catch(() => null);
+      const fromDoc: any = await fetch(FS(env, `/mailboxes/${mailboxId}`), {   headers: await ah(env) }).then((r) => r.json()).catch(() => null);
       const fromAddr = fromDoc?.fields?.address?.stringValue || '';
       const owner = fromDoc?.fields?.userId?.stringValue || '';
       if (!fromAddr || owner !== me.uid) return J({ error: 'firebase_unavailable', detail: 'mailbox lookup needs Firestore' }, 503, env);
