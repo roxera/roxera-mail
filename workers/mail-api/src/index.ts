@@ -251,6 +251,22 @@ export default {
           return J({ ok: true, via: 'cf' }, 200, env);
         } catch (e) { return J({ error: 'cf_send_failed', detail: String(e).slice(0, 300) }, 502, env); }
       }
+      // Триггер верификации домена в Resend + статус (ключ не покидает воркер)
+      if (url.pathname === '/internal/resend-verify' && req.method === 'POST') {
+        const r = await fetch(`https://api.resend.com/domains/${body.domainId || ''}/verify`, {
+          method: 'PATCH', headers: { authorization: `Bearer ${env.RESEND_API_KEY}` },
+        });
+        return J({ status: r.status, body: (await r.text()).slice(0, 400) }, 200, env);
+      }
+      if (url.pathname === '/internal/resend-status' && req.method === 'POST') {
+        const r = await fetch(`https://api.resend.com/domains/${body.domainId || ''}`, {
+          headers: { authorization: `Bearer ${env.RESEND_API_KEY}` },
+        });
+        const t = await r.text();
+        let name = '', status = '';
+        try { const j = JSON.parse(t); name = j.name || ''; status = j.status || ''; } catch { /* ignore */ }
+        return J({ http: r.status, name, status, raw: t.slice(0, 300) }, 200, env);
+      }
       return J({ error: 'not found' }, 404, env);
     }
 
